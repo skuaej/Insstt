@@ -24,15 +24,24 @@ last_edit_time = 0
 loop_engine = None
 
 # ==========================================================
-# COOKIES TEXT AREA
+# LIVE COOKIES COOKED HERE
 # ==========================================================
-COOKIES_DATA = """
+COOKIES_DATA = r"""
 # Netscape HTTP Cookie File
-# http://curl.haxx.se/rfc/cookie_spec.html
+# https://curl.haxx.se/rfc/cookie_spec.html
 # This is a generated file! Do not edit.
 
-.instagram.com	TRUE	/	TRUE	0	sessionid	YOUR_ACTUAL_SESSION_ID_HERE
-.instagram.com	TRUE	/	TRUE	0	ds_user_id	YOUR_USER_ID_HERE
+.instagram.com	TRUE	/	TRUE	1815543658	csrftoken	UHOEPGsEWWZCyWaTiQREctWt6VCVpEi2
+.instagram.com	TRUE	/	TRUE	1815543467	datr	q6YnagrdppRbnk_z74CLmql7
+.instagram.com	TRUE	/	TRUE	1812519467	ig_did	83632560-C690-4FB6-8BF3-BD321873D9AF
+.instagram.com	TRUE	/	TRUE	1781588459	wd	360x634
+.instagram.com	TRUE	/	TRUE	1781588346	dpr	3
+.instagram.com	TRUE	/	TRUE	1815543468	mid	aiemqwABAAF5b3O6W9brtE9zHHO0
+.instagram.com	TRUE	/	TRUE	1788759658	ds_user_id	25349046417
+.instagram.com	TRUE	/	TRUE	1812519546	sessionid	25349046417%3AelmMsdUhcSc1He%3A4%3AAYjZFTNLvevhBdQs48r-Bh5FxmIXO0yRu4uibe5kaw
+.instagram.com	TRUE	/	TRUE	1815543547	ps_l	1
+.instagram.com	TRUE	/	TRUE	1815543547	ps_n	1
+.instagram.com	TRUE	/	TRUE	0	rur	"SNB\05425349046417\0541812519658:01fffc9637faa298604a83c726eeea0db1be399feb6739f78b44fa57fa6ae6e555759255"
 """
 # ==========================================================
 
@@ -42,7 +51,6 @@ def create_progress_bar(percentage):
     total_blocks = 10
     filled_blocks = int(percentage / 10)
     empty_blocks = total_blocks - filled_blocks
-    # SONALI STYLE: Premium square blocks used cleanly here
     return f"[{'⬛' * filled_blocks}{'⬜' * empty_blocks}] {percentage}%"
 
 def yt_dlp_callback(d):
@@ -96,17 +104,16 @@ async def pyrogram_upload_callback(current, total, status_msg):
 def get_instagram_all_data(url):
     clean_url = url.split("?")[0].strip().rstrip("/")
     ydl_opts = {
-        'format': 'best[ext=mp4]/best', 
+        'format': 'best', 
         'quiet': True,
         'no_warnings': True,
         'get_comments': True,
+        'cookiefile': StringIO(CLEANED_COOKIES),
         'http_headers': {
-            'User-Agent': 'Instagram 311.0.0.32.118 Android (33/13; 450dpi; 1080x2216; Samsung; SM-S908B; q2q; qcom; en_US; 548232598)',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Referer': 'https://www.instagram.com/',
         }
     }
-    
-    if "sessionid" in CLEANED_COOKIES.lower():
-        ydl_opts['cookiefile'] = StringIO(CLEANED_COOKIES)
 
     with YoutubeDL(ydl_opts) as ydl:
         try:
@@ -114,9 +121,6 @@ def get_instagram_all_data(url):
             video_url = info.get('url') or (info['formats'][-1]['url'] if 'formats' in info else None)
             
             real_caption = info.get('description') or info.get('title') or info.get('alt_title') or 'No Caption'
-            if real_caption and "Window" in real_caption: 
-                real_caption = info.get('title', 'No Caption')
-
             metadata = {
                 "video_url": video_url,
                 "title": real_caption.strip(),
@@ -138,28 +142,27 @@ def get_instagram_all_data(url):
                     if len(metadata["comments"]) >= 10: break
             return metadata
         except Exception as e:
-            print(f"Metadata Restricted Block: {e}")
-            return {
-                "video_url": None, "title": "Restricted / Age-Gated Content", "uploader": "Restricted_Audience",
-                "duration": None, "view_count": "N/A", "like_count": "N/A", "id": str(int(time.time())),
-                "comments": ["💬 System: Top comments hidden for restricted links."]
-            }
+            print(f"Metadata Fetch Error: {e}")
+            return {"error": str(e), "id": str(int(time.time()))}
 
 def download_video_locally(url, video_id):
+    out_filename = f'video_{video_id}.mp4'
     ydl_opts = {
-        'format': 'best[ext=mp4]/best',
-        'outtmpl': f'video_{video_id}.mp4',
+        'format': 'best',
+        'outtmpl': out_filename,
         'quiet': True,
         'no_warnings': True,
         'progress_hooks': [yt_dlp_callback],
+        'cookiefile': StringIO(CLEANED_COOKIES),
+        'http_headers': {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Referer': 'https://www.instagram.com/',
+        }
     }
-    
-    if "sessionid" in CLEANED_COOKIES.lower():
-        ydl_opts['cookiefile'] = StringIO(CLEANED_COOKIES)
         
     with YoutubeDL(ydl_opts) as ydl:
         ydl.download([url])
-    return f'video_{video_id}.mp4'
+    return out_filename
 
 @app.on_message(filters.text & filters.regex(INSTAGRAM_REGEX))
 async def auto_detect_instagram_link(client, message):
@@ -177,23 +180,25 @@ async def auto_detect_instagram_link(client, message):
 
     data = await loop_engine.run_in_executor(None, get_instagram_all_data, url)
 
+    if "error" in data:
+        await status_msg.edit(f"❌ **Extraction Failed!**\n\n`Error Details: {data['error'][:120]}`\n\n*Check if your cookies on the browser have expired or been logged out.*")
+        return
+
     dur = data.get("duration")
     duration_str = f"{int(float(dur)) // 60}:{int(float(dur)) % 60:02d} Mins" if dur else "N/A"
     
     likes = data.get("like_count", "N/A")
     likes_str = f"{likes:,}" if isinstance(likes, int) else str(likes)
-    
     views = data.get("view_count", "N/A")
     views_str = f"{views:,}" if isinstance(views, int) else str(views)
     
-    # Simple clean typography to prevent device rendering errors
     caption = (
         f"⚡ **Instagram Reel Downloaded** ⚡\n\n"
         f"👤 **Uploader :** @{data.get('uploader')}\n"
         f"⏰ **Duration :** {duration_str}\n"
         f"👀 **Views :** {views_str}\n"
         f"❤️ **Likes :** {likes_str}\n\n"
-        f"📝 **Caption :** {data.get('title')[:200]}...\n"
+        f"📝 **Caption :** {data.get('title', 'No Title')[:200]}...\n"
     )
     if data.get("comments"):
         caption += "\n📊 **Top 10 User Comments:**\n" + "\n".join(data["comments"])
@@ -215,7 +220,7 @@ async def auto_detect_instagram_link(client, message):
             await status_msg.delete()
             os.remove(file_path)
         else:
-            await status_msg.edit("❌ **Extraction Failed!** Invalid or expired cookies parse setup.")
+            await status_msg.edit("❌ **Extraction Failed!** File downloaded but size is 0 bytes. Run `sudo apt install ffmpeg` on your VPS.")
             if os.path.exists(file_path): os.remove(file_path)
             
     except Exception as e:
@@ -223,7 +228,7 @@ async def auto_detect_instagram_link(client, message):
 
 if __name__ == "__main__":
     print("========================================")
-    print("🚀 SONALI STYLE PROGRESS BOT IS LIVE!   🚀")
+    print("🚀 BOT IS RUNNING ON VPS WITH LIVE COOKIES 🚀")
     print("========================================")
     app.run()
-  
+    
