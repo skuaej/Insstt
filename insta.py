@@ -1,31 +1,21 @@
 import re
 import os
 import sys
-import asyncio
 import time
 from itertools import cycle
 from io import StringIO
-from pyrogram import Client, filters
+from quart import Quart, request, jsonify, send_file
 from yt_dlp import YoutubeDL
 
 # Auto-update layer dependencies
 os.system(f"{sys.executable} -m pip install --upgrade yt-dlp")
 
-API_ID = 27479878
-API_HASH = "05f8dc8265d4c5df6376dded1d71c0ff"
-BOT_TOKEN = "8787555317:AAE1ezlBX--kAVPRGHPeQ2XV99Jvg8dhkXw"
-
-app = Client("pydroid_test_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+app = Quart(__name__)
 
 INSTAGRAM_REGEX = r".*(instagram\.com|instagr\.am)/(p|reel|tv|share)/[^\s]+"
 
-# Global reference variables tracking ke liye
-current_status_msg = None
-last_edit_time = 0
-loop_engine = None
-
 # ==========================================================
-# 🌐 PROXY POOL ROTATION (Parsed from your raw data)
+# 🌐 PROXY POOL ROTATION
 # ==========================================================
 RAW_PROXIES = [
     "38.154.203.95:5863:zbgnspng:l75251a9tnum",
@@ -41,18 +31,16 @@ RAW_PROXIES = [
 ]
 
 def format_proxy(p_str):
-    # Converts IP:PORT:USER:PASS to http://USER:PASS@IP:PORT
     parts = p_str.strip().split(":")
     if len(parts) == 4:
         ip, port, user, password = parts
         return f"http://{user}:{password}@{ip}:{port}"
     return f"http://{parts[0]}:{parts[1]}"
 
-# Creating an endless cycle pool for dynamic rotation
 PROXY_POOL = cycle([format_proxy(p) for p in RAW_PROXIES])
 
 # ==========================================================
-# 🍪 LIVE COOKIES COOKED HERE
+# 🍪 LIVE COOKIES
 # ==========================================================
 COOKIES_FILE_PATH = "instagram_cookies.txt"
 COOKIES_DATA = r"""
@@ -76,59 +64,9 @@ COOKIES_DATA = r"""
 with open(COOKIES_FILE_PATH, "w", encoding="utf-8") as f:
     f.write(COOKIES_DATA.strip())
 
-def create_progress_bar(percentage):
-    total_blocks = 10
-    filled_blocks = int(percentage / 10)
-    empty_blocks = total_blocks - filled_blocks
-    return f"[{'⬛' * filled_blocks}{'⬜' * empty_blocks}] {percentage}%"
-
-def yt_dlp_callback(d):
-    global current_status_msg, last_edit_time, loop_engine
-    if d['status'] == 'downloading' and current_status_msg and loop_engine:
-        total = d.get('total_bytes') or d.get('total_bytes_estimate')
-        downloaded = d.get('downloaded_bytes', 0)
-        
-        if total:
-            percentage = int((downloaded / total) * 100)
-            bar = create_progress_bar(percentage)
-            speed = d.get('speed', 0)
-            speed_str = f"{speed / (1024 * 1024):.2f} MB/s" if speed else "Scraping..."
-            
-            now = time.time()
-            if now - last_edit_time > 2.0:
-                last_edit_time = now
-                try:
-                    asyncio.run_coroutine_threadsafe(
-                        current_status_msg.edit(
-                            f"📥 **Downloading Media File...**\n\n"
-                            f"🎬 **Progress:** `{bar}`\n"
-                            f"⚡ **Speed:** `{speed_str}`"
-                        ),
-                        loop_engine
-                    )
-                except Exception:
-                    pass
-
-async def pyrogram_upload_callback(current, total, status_msg):
-    global last_edit_time
-    now = time.time()
-    
-    if now - last_edit_time > 2.0:
-        last_edit_time = now
-        percentage = int((current / total) * 100)
-        bar = create_progress_bar(percentage)
-        
-        current_mb = current / (1024 * 1024)
-        total_mb = total / (1024 * 1024)
-        
-        try:
-            await status_msg.edit(
-                f"📤 **Uploading to Telegram Server...**\n\n"
-                f"🚀 **Progress:** `{bar}`\n"
-                f"📦 **Size:** `{current_mb:.2f} MB` / `{total_mb:.2f} MB`"
-            )
-        except Exception:
-            pass
+# ==========================================================
+# CORE PROCESSING LOGIC
+# ==========================================================
 
 def get_instagram_all_data(url, proxy):
     clean_url = url.split("?")[0].strip().rstrip("/")
@@ -136,7 +74,8 @@ def get_instagram_all_data(url, proxy):
         'format': 'best', 
         'quiet': True,
         'no_warnings': True,
-        'get_comments': True,
+        'get_comments': True,                     
+        'extractor_args': {'instagram': ['get_comments']}, 
         'cookiefile': COOKIES_FILE_PATH,
         'proxy': proxy,
         'http_headers': {
@@ -149,31 +88,33 @@ def get_instagram_all_data(url, proxy):
         try:
             info = ydl.extract_info(clean_url, download=False)
             video_url = info.get('url') or (info['formats'][-1]['url'] if 'formats' in info else None)
-            
             real_caption = info.get('description') or info.get('title') or info.get('alt_title') or 'No Caption'
+            
             metadata = {
+                "status": "success",
+                "id": info.get('id') or str(int(time.time())),
                 "video_url": video_url,
                 "title": real_caption.strip(),
                 "uploader": info.get('uploader', 'Unknown_User'),
                 "duration": info.get('duration'),
                 "view_count": info.get('view_count', 'N/A'),
                 "like_count": info.get('like_count', 'N/A'),
-                "id": info.get('id') or str(int(time.time())),
                 "comments": []
             }
             
             raw_comments = info.get('comments', [])
             if raw_comments:
-                sorted_comments = sorted(raw_comments, key=lambda x: (x.get('like_count', 0), len(x.get('text', ''))), reverse=True)
+                sorted_comments = sorted(raw_comments, key=lambda x: (x.get('like_count', 0) or 0, len(x.get('text', '') or '')), reverse=True)
                 for c in sorted_comments:
-                    author = c.get('author', 'anonymous_user')
+                    author = c.get('author') or c.get('username') or 'user'
                     text = c.get('text', '').strip().replace('\n', ' ')
-                    if text: metadata["comments"].append(f"💬 @{author}: {text}")
-                    if len(metadata["comments"]) >= 10: break
+                    if text: 
+                        metadata["comments"].append({"author": f"@{author}", "comment": text})
+                    if len(metadata["comments"]) >= 10: 
+                        break
             return metadata
         except Exception as e:
-            print(f"Metadata Fetch Error: {e}")
-            return {"error": str(e), "id": str(int(time.time()))}
+            return {"status": "error", "message": str(e)}
 
 def download_video_locally(url, video_id, proxy):
     out_filename = f'video_{video_id}.mp4'
@@ -182,7 +123,6 @@ def download_video_locally(url, video_id, proxy):
         'outtmpl': out_filename,
         'quiet': True,
         'no_warnings': True,
-        'progress_hooks': [yt_dlp_callback],
         'cookiefile': COOKIES_FILE_PATH,
         'proxy': proxy,
         'http_headers': {
@@ -190,86 +130,68 @@ def download_video_locally(url, video_id, proxy):
             'Referer': 'https://www.instagram.com/',
         }
     }
-        
     with YoutubeDL(ydl_opts) as ydl:
         ydl.download([url])
     return out_filename
 
-@app.on_message(filters.text & filters.regex(INSTAGRAM_REGEX))
-async def auto_detect_instagram_link(client, message):
-    global current_status_msg, last_edit_time, loop_engine
+# ==========================================================
+# API ENDPOINTS
+# ==========================================================
+
+@app.route('/api/metadata', methods=['GET'])
+async def fetch_metadata():
+    """Returns pure video details and top 10 comments in JSON format"""
+    url = request.args.get('url')
+    if not url or not re.match(INSTAGRAM_REGEX, url):
+        return jsonify({"status": "error", "message": "Missing or invalid Instagram URL"}), 400
     
-    match = re.search(r'(https?://[^\s]+)', message.text)
-    if not match: return
-        
-    url = match.group(1)
-    
-    # Pick next proxy out of rotation cycle pool
     selected_proxy = next(PROXY_POOL)
-    # Masking login parameters for logs safety
-    masked_proxy = selected_proxy.split('@')[-1] if '@' in selected_proxy else selected_proxy
+    loop = asyncio.get_event_loop()
     
-    status_msg = await message.reply_text(f"⚡ **Link detected!**\n🛰️ Routing through Node: `{masked_proxy}`...")
+    # Run synchronous yt-dlp in executor to keep endpoint responsive
+    data = await loop.run_in_executor(None, get_instagram_all_data, url, selected_proxy)
+    return jsonify(data)
 
-    loop_engine = asyncio.get_event_loop()
-    current_status_msg = status_msg
-    last_edit_time = 0
 
-    data = await loop_engine.run_in_executor(None, get_instagram_all_data, url, selected_proxy)
-
-    if "error" in data:
-        await status_msg.edit(
-            f"❌ **Extraction Blocked by Instagram Endpoint!**\n\n"
-            f"`Details: {data['error'][:120]}`\n\n"
-            f"💡 *The node assigned might be timed out or the cookie session expired.*"
-        )
-        return
-
-    dur = data.get("duration")
-    duration_str = f"{int(float(dur)) // 60}:{int(float(dur)) % 60:02d} Mins" if dur else "N/A"
+@app.route('/api/download', methods=['GET'])
+async def download_video():
+    """Downloads the file via proxy rotation and streams the clean .mp4 back to client"""
+    url = request.args.get('url')
+    if not url or not re.match(INSTAGRAM_REGEX, url):
+        return jsonify({"status": "error", "message": "Missing or invalid Instagram URL"}), 400
+        
+    selected_proxy = next(PROXY_POOL)
+    loop = asyncio.get_event_loop()
     
-    likes = data.get("like_count", "N/A")
-    likes_str = f"{likes:,}" if isinstance(likes, int) else str(likes)
-    views = data.get("view_count", "N/A")
-    views_str = f"{views:,}" if isinstance(views, int) else str(views)
+    # Fetch data first to acquire video structural ID
+    meta_data = await loop.run_in_executor(None, get_instagram_all_data, url, selected_proxy)
+    if meta_data.get("status") == "error":
+        return jsonify(meta_data), 400
+        
+    video_id = meta_data["id"]
     
-    caption = (
-        f"⚡ **Instagram Reel Downloaded** ⚡\n\n"
-        f"👤 **Uploader :** @{data.get('uploader')}\n"
-        f"⏰ **Duration :** {duration_str}\n"
-        f"👀 **Views :** {views_str}\n"
-        f"❤️ **Likes :** {likes_str}\n\n"
-        f"📝 **Caption :** {data.get('title', 'No Title')[:200]}...\n"
-    )
-    if data.get("comments"):
-        caption += "\n📊 **Top 10 User Comments:**\n" + "\n".join(data["comments"])
-    if len(caption) > 1010: caption = caption[:970] + "\n\n...[Truncated]"
-
     try:
-        file_path = await loop_engine.run_in_executor(None, download_video_locally, url, data["id"], selected_proxy)
+        # Download file to local storage pipeline
+        file_path = await loop.run_in_executor(None, download_video_locally, url, video_id, selected_proxy)
         
         if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
-            await status_msg.edit("📤 **Download complete! Initializing Telegram upload channel...**")
+            # Send file down the stream connection safely
+            response = await send_file(file_path, mimetype="video/mp4", as_attachment=True, attachment_filename=f"{video_id}.mp4")
             
-            await message.reply_video(
-                video=file_path, 
-                caption=caption,
-                progress=pyrogram_upload_callback,
-                progress_args=(status_msg,)
-            )
-            
-            await status_msg.delete()
-            os.remove(file_path)
+            # Delete local file after transmission finishes to keep your VPS space empty
+            @response.call_on_close
+            def cleanup():
+                if os.path.exists(file_path):
+                    os.remove(file_path)
+            return response
         else:
-            await status_msg.edit("❌ **Extraction Failed!** File structural parsing issue (0-byte payload returned).")
-            if os.path.exists(file_path): os.remove(file_path)
+            return jsonify({"status": "error", "message": "File downloaded but contains zero bytes container error"}), 500
             
     except Exception as e:
-        await status_msg.edit(f"❌ Pipeline broke down during workflow.\nError: {e}")
+        return jsonify({"status": "error", "message": f"Pipeline broke down: {str(e)}"}), 500
+
 
 if __name__ == "__main__":
-    print("========================================")
-    print("🚀 AUTOMATIC ROTATING PROXY BOT ALIVE  🚀")
-    print("========================================")
-    app.run()
+    # Runs the server locally on port 5000
+    app.run(host="0.0.0.0", port=5000, debug=False)
     
