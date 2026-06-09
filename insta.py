@@ -3,7 +3,6 @@ import os
 import sys
 import asyncio
 import time
-from io import StringIO
 from pyrogram import Client, filters
 from yt_dlp import YoutubeDL
 
@@ -24,8 +23,9 @@ last_edit_time = 0
 loop_engine = None
 
 # ==========================================================
-# LIVE COOKIES COOKED HERE
+# WRITE COOKIES TO RAW STORAGE
 # ==========================================================
+COOKIES_FILE_PATH = "instagram_cookies.txt"
 COOKIES_DATA = r"""
 # Netscape HTTP Cookie File
 # https://curl.haxx.se/rfc/cookie_spec.html
@@ -43,9 +43,10 @@ COOKIES_DATA = r"""
 .instagram.com	TRUE	/	TRUE	1815543547	ps_n	1
 .instagram.com	TRUE	/	TRUE	0	rur	"SNB\05425349046417\0541812519658:01fffc9637faa298604a83c726eeea0db1be399feb6739f78b44fa57fa6ae6e555759255"
 """
-# ==========================================================
 
-CLEANED_COOKIES = COOKIES_DATA.strip()
+# Write cookies directly to disk file safely on startup
+with open(COOKIES_FILE_PATH, "w", encoding="utf-8") as f:
+    f.write(COOKIES_DATA.strip())
 
 def create_progress_bar(percentage):
     total_blocks = 10
@@ -108,9 +109,9 @@ def get_instagram_all_data(url):
         'quiet': True,
         'no_warnings': True,
         'get_comments': True,
-        'cookiefile': StringIO(CLEANED_COOKIES),
+        'cookiefile': COOKIES_FILE_PATH,  # Reading from actual disk file
         'http_headers': {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
             'Referer': 'https://www.instagram.com/',
         }
     }
@@ -153,9 +154,9 @@ def download_video_locally(url, video_id):
         'quiet': True,
         'no_warnings': True,
         'progress_hooks': [yt_dlp_callback],
-        'cookiefile': StringIO(CLEANED_COOKIES),
+        'cookiefile': COOKIES_FILE_PATH,  # Reading from actual disk file
         'http_headers': {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
             'Referer': 'https://www.instagram.com/',
         }
     }
@@ -181,7 +182,13 @@ async def auto_detect_instagram_link(client, message):
     data = await loop_engine.run_in_executor(None, get_instagram_all_data, url)
 
     if "error" in data:
-        await status_msg.edit(f"❌ **Extraction Failed!**\n\n`Error Details: {data['error'][:120]}`\n\n*Check if your cookies on the browser have expired or been logged out.*")
+        # Check if it's a structural failure or explicit block
+        err_msg = data['error'].lower()
+        if "login" in err_msg or "checkpoint" in err_msg or "sign in" in err_msg:
+            hint = "❌ **Instagram Blocked the VPS IP!**\nYour cookies were rejected or Instagram triggered a security checkpoint challenge on your account because of the VPS location."
+        else:
+            hint = f"❌ **Extraction Failed!**\n`Details: {data['error'][:140]}`"
+        await status_msg.edit(hint)
         return
 
     dur = data.get("duration")
@@ -220,7 +227,7 @@ async def auto_detect_instagram_link(client, message):
             await status_msg.delete()
             os.remove(file_path)
         else:
-            await status_msg.edit("❌ **Extraction Failed!** File downloaded but size is 0 bytes. Run `sudo apt install ffmpeg` on your VPS.")
+            await status_msg.edit("❌ **Extraction Failed!** 0-Byte payload. Please verify that `ffmpeg` is installed on the VPS host machine.")
             if os.path.exists(file_path): os.remove(file_path)
             
     except Exception as e:
@@ -228,7 +235,7 @@ async def auto_detect_instagram_link(client, message):
 
 if __name__ == "__main__":
     print("========================================")
-    print("🚀 BOT IS RUNNING ON VPS WITH LIVE COOKIES 🚀")
+    print("🚀 DISK-BASED COOKIE BOT RUNNING ON VPS 🚀")
     print("========================================")
     app.run()
     
