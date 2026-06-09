@@ -3,6 +3,8 @@ import os
 import sys
 import asyncio
 import time
+from itertools import cycle
+from io import StringIO
 from pyrogram import Client, filters
 from yt_dlp import YoutubeDL
 
@@ -23,7 +25,34 @@ last_edit_time = 0
 loop_engine = None
 
 # ==========================================================
-# WRITE COOKIES TO RAW STORAGE
+# 🌐 PROXY POOL ROTATION (Parsed from your raw data)
+# ==========================================================
+RAW_PROXIES = [
+    "38.154.203.95:5863:zbgnspng:l75251a9tnum",
+    "198.105.121.200:6462:zbgnspng:l75251a9tnum",
+    "64.137.96.74:6641:zbgnspng:l75251a9tnum",
+    "209.127.138.10:5784:zbgnspng:l75251a9tnum",
+    "38.154.185.97:6370:zbgnspng:l75251a9tnum",
+    "84.247.60.125:6095:zbgnspng:l75251a9tnum",
+    "142.111.67.146:5611:zbgnspng:l75251a9tnum",
+    "191.96.254.138:6185:zbgnspng:l75251a9tnum",
+    "31.58.9.4:6077:zbgnspng:l75251a9tnum",
+    "104.239.107.47:5699:zbgnspng:l75251a9tnum"
+]
+
+def format_proxy(p_str):
+    # Converts IP:PORT:USER:PASS to http://USER:PASS@IP:PORT
+    parts = p_str.strip().split(":")
+    if len(parts) == 4:
+        ip, port, user, password = parts
+        return f"http://{user}:{password}@{ip}:{port}"
+    return f"http://{parts[0]}:{parts[1]}"
+
+# Creating an endless cycle pool for dynamic rotation
+PROXY_POOL = cycle([format_proxy(p) for p in RAW_PROXIES])
+
+# ==========================================================
+# 🍪 LIVE COOKIES COOKED HERE
 # ==========================================================
 COOKIES_FILE_PATH = "instagram_cookies.txt"
 COOKIES_DATA = r"""
@@ -44,7 +73,6 @@ COOKIES_DATA = r"""
 .instagram.com	TRUE	/	TRUE	0	rur	"SNB\05425349046417\0541812519658:01fffc9637faa298604a83c726eeea0db1be399feb6739f78b44fa57fa6ae6e555759255"
 """
 
-# Write cookies directly to disk file safely on startup
 with open(COOKIES_FILE_PATH, "w", encoding="utf-8") as f:
     f.write(COOKIES_DATA.strip())
 
@@ -102,16 +130,17 @@ async def pyrogram_upload_callback(current, total, status_msg):
         except Exception:
             pass
 
-def get_instagram_all_data(url):
+def get_instagram_all_data(url, proxy):
     clean_url = url.split("?")[0].strip().rstrip("/")
     ydl_opts = {
         'format': 'best', 
         'quiet': True,
         'no_warnings': True,
         'get_comments': True,
-        'cookiefile': COOKIES_FILE_PATH,  # Reading from actual disk file
+        'cookiefile': COOKIES_FILE_PATH,
+        'proxy': proxy,
         'http_headers': {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
             'Referer': 'https://www.instagram.com/',
         }
     }
@@ -146,7 +175,7 @@ def get_instagram_all_data(url):
             print(f"Metadata Fetch Error: {e}")
             return {"error": str(e), "id": str(int(time.time()))}
 
-def download_video_locally(url, video_id):
+def download_video_locally(url, video_id, proxy):
     out_filename = f'video_{video_id}.mp4'
     ydl_opts = {
         'format': 'best',
@@ -154,9 +183,10 @@ def download_video_locally(url, video_id):
         'quiet': True,
         'no_warnings': True,
         'progress_hooks': [yt_dlp_callback],
-        'cookiefile': COOKIES_FILE_PATH,  # Reading from actual disk file
+        'cookiefile': COOKIES_FILE_PATH,
+        'proxy': proxy,
         'http_headers': {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
             'Referer': 'https://www.instagram.com/',
         }
     }
@@ -173,22 +203,26 @@ async def auto_detect_instagram_link(client, message):
     if not match: return
         
     url = match.group(1)
-    status_msg = await message.reply_text("⚡ **Link detected!** Querying server data...")
+    
+    # Pick next proxy out of rotation cycle pool
+    selected_proxy = next(PROXY_POOL)
+    # Masking login parameters for logs safety
+    masked_proxy = selected_proxy.split('@')[-1] if '@' in selected_proxy else selected_proxy
+    
+    status_msg = await message.reply_text(f"⚡ **Link detected!**\n🛰️ Routing through Node: `{masked_proxy}`...")
 
     loop_engine = asyncio.get_event_loop()
     current_status_msg = status_msg
     last_edit_time = 0
 
-    data = await loop_engine.run_in_executor(None, get_instagram_all_data, url)
+    data = await loop_engine.run_in_executor(None, get_instagram_all_data, url, selected_proxy)
 
     if "error" in data:
-        # Check if it's a structural failure or explicit block
-        err_msg = data['error'].lower()
-        if "login" in err_msg or "checkpoint" in err_msg or "sign in" in err_msg:
-            hint = "❌ **Instagram Blocked the VPS IP!**\nYour cookies were rejected or Instagram triggered a security checkpoint challenge on your account because of the VPS location."
-        else:
-            hint = f"❌ **Extraction Failed!**\n`Details: {data['error'][:140]}`"
-        await status_msg.edit(hint)
+        await status_msg.edit(
+            f"❌ **Extraction Blocked by Instagram Endpoint!**\n\n"
+            f"`Details: {data['error'][:120]}`\n\n"
+            f"💡 *The node assigned might be timed out or the cookie session expired.*"
+        )
         return
 
     dur = data.get("duration")
@@ -212,7 +246,7 @@ async def auto_detect_instagram_link(client, message):
     if len(caption) > 1010: caption = caption[:970] + "\n\n...[Truncated]"
 
     try:
-        file_path = await loop_engine.run_in_executor(None, download_video_locally, url, data["id"])
+        file_path = await loop_engine.run_in_executor(None, download_video_locally, url, data["id"], selected_proxy)
         
         if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
             await status_msg.edit("📤 **Download complete! Initializing Telegram upload channel...**")
@@ -227,7 +261,7 @@ async def auto_detect_instagram_link(client, message):
             await status_msg.delete()
             os.remove(file_path)
         else:
-            await status_msg.edit("❌ **Extraction Failed!** 0-Byte payload. Please verify that `ffmpeg` is installed on the VPS host machine.")
+            await status_msg.edit("❌ **Extraction Failed!** File structural parsing issue (0-byte payload returned).")
             if os.path.exists(file_path): os.remove(file_path)
             
     except Exception as e:
@@ -235,7 +269,7 @@ async def auto_detect_instagram_link(client, message):
 
 if __name__ == "__main__":
     print("========================================")
-    print("🚀 DISK-BASED COOKIE BOT RUNNING ON VPS 🚀")
+    print("🚀 AUTOMATIC ROTATING PROXY BOT ALIVE  🚀")
     print("========================================")
     app.run()
     
